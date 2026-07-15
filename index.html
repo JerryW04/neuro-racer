@@ -84,6 +84,25 @@ header a:hover{color:var(--ink)}
 .keyreads{display:flex;justify-content:space-between;font-size:12.5px;color:var(--faint)}
 .keyreads b{color:var(--ink);font-variant-numeric:tabular-nums;font-weight:700}
 
+/* race overlay */
+.raceover{
+  position:absolute;inset:0;z-index:4;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;
+  background:rgba(245,244,241,.85);backdrop-filter:blur(4px);padding:20px;
+}
+.raceover.hidden{display:none}
+.raceover h2{font-size:clamp(28px,5vw,42px);font-weight:800;letter-spacing:-.02em}
+.raceover p{color:var(--gray);margin:10px 0 20px;font-size:15.5px;max-width:40ch}
+.racebtns{display:flex;gap:10px}
+.rbtn{
+  background:var(--ink);color:var(--bg);border:none;border-radius:10px;
+  font-size:15px;font-weight:700;padding:12px 26px;
+  transition:transform .25s var(--ease),background .25s var(--ease);
+}
+.rbtn:hover{background:var(--accent);color:#fff;transform:translateY(-2px)}
+.rbtn.ghost{background:none;color:var(--gray);border:1px solid var(--line)}
+.rbtn.ghost:hover{color:var(--ink);border-color:var(--faint);background:none}
+
 .side{display:flex;flex-direction:column;gap:20px}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:20px}
 .panel h3{
@@ -117,10 +136,19 @@ header a:hover{color:var(--ink)}
       <div id="trackBox">
         <canvas id="track"></canvas>
         <div id="drawHint">Draw your track in one stroke —<br>end near the start for a loop, or anywhere for a sprint</div>
+        <div id="raceOverlay" class="raceover hidden">
+          <h2 id="raceTitle">You win!</h2>
+          <p id="raceDetail"></p>
+          <div class="racebtns">
+            <button class="rbtn" id="raceAgainBtn">Race again</button>
+            <button class="rbtn ghost" id="raceExitBtn">Back to training</button>
+          </div>
+        </div>
       </div>
       <div class="tools">
         <button class="tool" id="drawBtn">✎ Draw track</button>
         <button class="tool" id="resetTrackBtn">Default track</button>
+        <button class="tool" id="raceBtn">🏁 Race the AI</button>
         <button class="tool accent" id="resetPopBtn" style="margin-left:auto">Reset brains</button>
       </div>
       <div class="sliders">
@@ -163,6 +191,7 @@ header a:hover{color:var(--ink)}
       </div>
       <div class="panel legend">
         <div><span class="sw" style="background:#E4602F"></span>Current best car (sensors shown)</div>
+        <div><span class="sw" style="background:#4A9DF0"></span>You, when racing — steer with ← → / A D, ↑ / W for gas, ↓ / S to brake</div>
         <div><span class="sw" style="background:#B9B8B1"></span>Rest of the population</div>
         <div>End your stroke near its start for a lap-able loop — or anywhere else for a point-to-point sprint to the finish flag. Cars keep their brains when you draw a new track.</div>
       </div>
@@ -480,18 +509,179 @@ function evolve(){
   drawChart();
 }
 
+/* ================= race mode ================= */
+var race = null;          /* null when training; else race state */
+var bestEver = 0;
+var raceBestScore = 0;
+var keysDown = {};
+
+window.addEventListener('keydown', function(e){
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].indexOf(e.key) >= 0 && race) e.preventDefault();
+  keysDown[e.key.toLowerCase()] = true;
+});
+window.addEventListener('keyup', function(e){ keysDown[e.key.toLowerCase()] = false; });
+
+function playerControls(){
+  var steer = 0, throttle = 0.35, brake = false;
+  if(keysDown['arrowleft'] || keysDown['a']) steer -= 1;
+  if(keysDown['arrowright'] || keysDown['d']) steer += 1;
+  if(keysDown['arrowup'] || keysDown['w']) throttle = 1;
+  if(keysDown['arrowdown'] || keysDown['s']) brake = true;
+  if(race && race.touchSteer !== null){ steer = race.touchSteer; throttle = 1; }
+  return { steer: steer, throttle: throttle, brake: brake };
+}
+
+function currentBestGenome(){
+  var best = null;
+  cars.forEach(function(c){ if(!best || c.fitness > best.fitness) best = c; });
+  return best ? new Float32Array(best.g) : new Float32Array(genomes[0]);
+}
+
+function makeRacer(genome, color){
+  var p0 = centerline[0], p1 = centerline[1];
+  return {
+    g: genome, color: color,
+    x: p0.x, y: p0.y,
+    angle: Math.atan2(p1.y - p0.y, p1.x - p0.x),
+    speed: 20, cpIndex: 0, laps: 0,
+    finished: false, ctrl: { steer: 0, throttle: 0 },
+    rays: [0,0,0,0,0]
+  };
+}
+
+function startRace(){
+  exitDrawMode();
+  var aiG = currentBestGenome();
+  race = {
+    phase: 'countdown', t: 0, timer: 0,
+    ai: makeRacer(aiG, '#E4602F'),
+    player: makeRacer(null, '#4A9DF0'),
+    winner: null, score: 0, touchSteer: null,
+    genAtStart: generation, bestAtStart: Math.max(bestEver, 1)
+  };
+  /* offset the two cars side by side on the grid */
+  var a = race.ai.angle;
+  race.ai.x += Math.cos(a + Math.PI/2) * 14;  race.ai.y += Math.sin(a + Math.PI/2) * 14;
+  race.player.x -= Math.cos(a + Math.PI/2) * 14; race.player.y -= Math.sin(a + Math.PI/2) * 14;
+  raceOverlay.classList.add('hidden');
+  raceBtn.textContent = 'Exit race';
+}
+
+function endRace(){
+  race = null;
+  raceOverlay.classList.add('hidden');
+  raceBtn.textContent = '🏁 Race the AI';
+  resetGenerationOnTrack();   /* resume training cleanly */
+}
+
+function updateRacer(r, dt, ctl){
+  if(r.finished) return;
+  r.ctrl = ctl;
+  r.speed += (ctl.throttle * 190 - 60) * dt;
+  if(ctl.brake) r.speed -= 260 * dt;
+  r.speed = Math.max(20, Math.min(170, r.speed));
+  r.angle += ctl.steer * 2.6 * dt * (0.4 + r.speed / 170);
+  r.x += Math.cos(r.angle) * r.speed * dt;
+  r.y += Math.sin(r.angle) * r.speed * dt;
+  /* racing is forgiving: off-road slows you down instead of ending you */
+  if(!onRoad(r.x, r.y)) r.speed = Math.min(r.speed, 42);
+
+  var n = centerline.length;
+  var next = (r.cpIndex + 1) % n;
+  var target = centerline[next];
+  var dx = r.x - target.x, dy = r.y - target.y;
+  if(dx*dx + dy*dy < (roadW * 0.75) * (roadW * 0.75)){
+    r.cpIndex = next;
+    if(closedLoop && next === 0){ r.laps++; r.finished = true; }
+    if(!closedLoop && next === n - 1){ r.finished = true; }
+  }
+}
+
+function aiControls(r){
+  var inputs = new Float32Array(N_IN);
+  for(var i = 0; i < 5; i++){
+    var d = castRay(r.x, r.y, r.angle + RAYS[i]);
+    r.rays[i] = d;
+    inputs[i] = d / RAY_MAX;
+  }
+  inputs[5] = r.speed / 170;
+  var out = forward(r.g, inputs);
+  return { steer: out[0], throttle: (out[1] + 1) / 2, brake: false };
+}
+
+function updateRace(dt){
+  race.t += dt;
+  if(race.phase === 'countdown'){
+    if(race.t >= 3.6){ race.phase = 'racing'; race.timer = 0; }
+    return;
+  }
+  if(race.phase !== 'racing') return;
+  race.timer += dt;
+  updateRacer(race.ai, dt, aiControls(race.ai));
+  updateRacer(race.player, dt, playerControls());
+
+  if(race.ai.finished || race.player.finished){
+    race.phase = 'done';
+    race.winner = race.player.finished && !race.ai.finished ? 'player'
+                : race.ai.finished && !race.player.finished ? 'ai' : 'tie';
+    if(race.winner === 'player' || race.winner === 'tie'){
+      /* reward scales with how evolved the opponent was */
+      race.score = Math.round(race.genAtStart * 50 + race.bestAtStart);
+      if(race.winner === 'tie') race.score = Math.round(race.score / 2);
+      raceBestScore = Math.max(raceBestScore, race.score);
+    }
+    showRaceResult();
+  }
+}
+
+function showRaceResult(){
+  var title, detail;
+  var lapWord = closedLoop ? 'the lap' : 'the sprint';
+  if(race.winner === 'player'){
+    title = 'You win! 🏆';
+    detail = 'You beat a generation-' + race.genAtStart + ' driver (best fitness ' + race.bestAtStart +
+             ') in ' + fmtTime(race.timer) + '. Score: ' + race.score +
+             (raceBestScore > race.score ? ' · Session best: ' + raceBestScore : '');
+  }else if(race.winner === 'ai'){
+    title = 'The AI takes it';
+    detail = 'The generation-' + race.genAtStart + ' driver finished ' + lapWord + ' in ' + fmtTime(race.timer) +
+             '. Let it train a few more generations… or don\u2019t, and get revenge now.';
+  }else{
+    title = 'Photo finish!';
+    detail = 'You and the AI finished together. Half score: ' + race.score;
+  }
+  raceTitle.textContent = title;
+  raceDetail.textContent = detail;
+  raceOverlay.classList.remove('hidden');
+}
+
+function fmtTime(t){
+  var m = Math.floor(t / 60), s = t - m * 60;
+  return (m > 0 ? m + ':' : '') + (s < 10 && m > 0 ? '0' : '') + s.toFixed(1) + 's';
+}
+
+var raceBtn = document.getElementById('raceBtn');
+var raceOverlay = document.getElementById('raceOverlay');
+var raceTitle = document.getElementById('raceTitle');
+var raceDetail = document.getElementById('raceDetail');
+raceBtn.addEventListener('click', function(){ race ? endRace() : startRace(); });
+document.getElementById('raceAgainBtn').addEventListener('click', startRace);
+document.getElementById('raceExitBtn').addEventListener('click', endRace);
+
 /* ================= drawing mode ================= */
 var drawMode = false, drawingNow = false, rawPts = [];
 var drawBtn = document.getElementById('drawBtn');
 var drawHint = document.getElementById('drawHint');
 
 drawBtn.addEventListener('click', function(){
+  if(race) endRace();
   drawMode = !drawMode;
   drawBtn.classList.toggle('active', drawMode);
   canvas.classList.toggle('drawing', drawMode);
   drawHint.classList.toggle('show', drawMode);
 });
 document.getElementById('resetTrackBtn').addEventListener('click', function(){
+  if(race) endRace();
   exitDrawMode();
   buildTrack(defaultTrack());
 });
@@ -516,6 +706,7 @@ var widthVal = document.getElementById('widthVal');
 widthSlider.addEventListener('input', function(){
   roadW = +this.value;
   widthVal.textContent = roadW + 'px';
+  if(race) endRace();
   if(lastPath) buildTrack(lastPath);
 });
 
@@ -542,12 +733,24 @@ function ptFromEvent(e){
   return { x: (p.clientX - r.left) * (canvas.width / r.width), y: (p.clientY - r.top) * (canvas.height / r.height) };
 }
 function penDown(e){
+  if(race){
+    var rp = ptFromEvent(e);
+    race.touchSteer = rp.x < W / 2 ? -1 : 1;
+    e.preventDefault();
+    return;
+  }
   if(!drawMode) return;
   drawingNow = true; rawPts = [ptFromEvent(e)];
   drawHint.classList.remove('show');
   e.preventDefault();
 }
 function penMove(e){
+  if(race && race.touchSteer !== null){
+    var rp = ptFromEvent(e);
+    race.touchSteer = rp.x < W / 2 ? -1 : 1;
+    e.preventDefault();
+    return;
+  }
   if(!drawingNow) return;
   var p = ptFromEvent(e);
   var lastP = rawPts[rawPts.length - 1];
@@ -556,6 +759,7 @@ function penMove(e){
   e.preventDefault();
 }
 function penUp(){
+  if(race){ race.touchSteer = null; return; }
   if(!drawingNow) return;
   drawingNow = false;
   if(rawPts.length > 8){
@@ -620,27 +824,65 @@ function render(){
     ctx.stroke();
   }
 
-  /* cars — find best alive for highlight */
-  var best = null;
-  cars.forEach(function(c){
-    if(c.alive && (!best || c.fitness > best.fitness)) best = c;
-  });
-  cars.forEach(function(c){
-    if(!c.alive) return;
-    if(c !== best) drawCar(c, '#B9B8B1');
-  });
-  if(best){
-    /* sensor rays */
+  /* cars */
+  if(race){
+    /* race mode: AI with sensors + player */
     ctx.strokeStyle = 'rgba(228,96,47,.35)';
     ctx.lineWidth = 1;
-    for(var r = 0; r < 5; r++){
-      var a = best.angle + RAYS[r];
+    for(var rr = 0; rr < 5; rr++){
+      var ra = race.ai.angle + RAYS[rr];
       ctx.beginPath();
-      ctx.moveTo(best.x, best.y);
-      ctx.lineTo(best.x + Math.cos(a) * best.rays[r], best.y + Math.sin(a) * best.rays[r]);
+      ctx.moveTo(race.ai.x, race.ai.y);
+      ctx.lineTo(race.ai.x + Math.cos(ra) * race.ai.rays[rr], race.ai.y + Math.sin(ra) * race.ai.rays[rr]);
       ctx.stroke();
     }
-    drawCar(best, '#E4602F');
+    drawCar(race.ai, race.ai.color);
+    drawCar(race.player, race.player.color);
+
+    /* timer pill */
+    if(race.phase !== 'countdown'){
+      var label = fmtTime(race.timer);
+      ctx.font = '800 17px Hanken Grotesk';
+      var tw = ctx.measureText(label).width + 30;
+      ctx.fillStyle = 'rgba(25,25,23,.88)';
+      ctx.beginPath();
+      ctx.roundRect(W/2 - tw/2, 12, tw, 34, 10);
+      ctx.fill();
+      ctx.fillStyle = '#F5F4F1';
+      ctx.textAlign = 'center';
+      ctx.fillText(label, W/2, 35);
+    }
+    /* countdown */
+    if(race.phase === 'countdown'){
+      var num = Math.ceil(3 - race.t);
+      ctx.fillStyle = 'rgba(25,25,23,.82)';
+      ctx.font = '800 88px Hanken Grotesk';
+      ctx.textAlign = 'center';
+      ctx.fillText(num > 0 ? num : 'GO', W/2, H/2 + 30);
+    }
+  }else{
+    /* training mode: population + best highlight */
+    var best = null;
+    cars.forEach(function(c){
+      if(c.alive && (!best || c.fitness > best.fitness)) best = c;
+    });
+    cars.forEach(function(c){
+      if(!c.alive) return;
+      if(c !== best) drawCar(c, '#B9B8B1');
+    });
+    if(best){
+      /* sensor rays */
+      ctx.strokeStyle = 'rgba(228,96,47,.35)';
+      ctx.lineWidth = 1;
+      for(var r = 0; r < 5; r++){
+        var a = best.angle + RAYS[r];
+        ctx.beginPath();
+        ctx.moveTo(best.x, best.y);
+        ctx.lineTo(best.x + Math.cos(a) * best.rays[r], best.y + Math.sin(a) * best.rays[r]);
+        ctx.stroke();
+      }
+      drawCar(best, '#E4602F');
+    }
   }
 }
 function pathCenterline(){
@@ -712,12 +954,14 @@ function updateHUD(){
     }
     if(c.fitness > best) best = c.fitness;
   });
+  bestEver = Math.max(bestEver, best);
   genStat.textContent = generation;
-  aliveStat.textContent = alive;
+  aliveStat.textContent = race ? '—' : alive;
   bestStat.textContent = best;
-  timeStat.textContent = Math.floor(genTime) + 's';
+  timeStat.textContent = race ? fmtTime(race.timer || 0) : Math.floor(genTime) + 's';
 
-  var ctl = bestCar && bestCar.ctrl ? bestCar.ctrl : { steer: 0, throttle: 0 };
+  var src = race ? race.ai : bestCar;
+  var ctl = src && src.ctrl ? src.ctrl : { steer: 0, throttle: 0 };
   setKey(keyL, ctl.steer < 0 ? -ctl.steer : 0);
   setKey(keyR, ctl.steer > 0 ? ctl.steer : 0);
   setKey(keyT, ctl.throttle);
@@ -732,7 +976,9 @@ function loop(ts){
   var frameDt = Math.min((ts - last) / 1000, 0.05);
   last = ts;
 
-  if(!drawMode && !drawingNow){
+  if(race){
+    if(race.phase !== 'done') updateRace(1 / 60);
+  }else if(!drawMode && !drawingNow){
     var steps = simSpeed;
     var dt = 1 / 60;
     for(var s = 0; s < steps; s++){
