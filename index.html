@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neuro Racer — Jerry Wang</title>
+<meta name="description" content="Watch neural-network cars learn to drive a track through evolution — then draw your own track and see if they can master it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F5F4F1;
+  --surface:#FFFFFF;
+  --ink:#191917;
+  --gray:#77766F;
+  --faint:#A7A6A0;
+  --line:#E4E3DD;
+  --accent:#E4602F;
+  --ease:cubic-bezier(.22,.61,.21,1);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+::selection{background:var(--ink);color:var(--bg)}
+body{
+  background:var(--bg);color:var(--ink);
+  font-family:'Hanken Grotesk',sans-serif;font-size:16px;line-height:1.6;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:'Hanken Grotesk',sans-serif;cursor:pointer}
+a:focus-visible,button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.wrap{width:min(100%,1060px);padding:24px 20px 56px}
+
+header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;margin-bottom:22px}
+.logo{font-weight:800;font-size:19px;letter-spacing:-.02em}
+.logo span{color:var(--accent)}
+header a{color:var(--faint);font-size:13.5px;text-decoration:none;transition:color .25s var(--ease)}
+header a:hover{color:var(--ink)}
+
+.game{display:grid;grid-template-columns:1fr 270px;gap:20px}
+.board{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:16px}
+#trackBox{position:relative;border-radius:12px;overflow:hidden;border:1px solid var(--line)}
+#track{display:block;width:100%;cursor:default;touch-action:none}
+#track.drawing{cursor:crosshair}
+#drawHint{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:rgba(245,244,241,.7);pointer-events:none;
+  font-weight:700;font-size:17px;color:var(--ink);text-align:center;padding:20px;
+  opacity:0;transition:opacity .3s var(--ease);
+}
+#drawHint.show{opacity:1}
+.tools{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.tool{
+  background:none;border:1px solid var(--line);color:var(--gray);border-radius:9px;
+  padding:9px 16px;font-size:13.5px;font-weight:600;
+  transition:color .25s var(--ease),border-color .25s var(--ease),background .25s var(--ease);
+}
+.tool:hover{color:var(--ink);border-color:var(--faint)}
+.tool.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.tool.accent{color:var(--accent);border-color:transparent}
+.tool.accent:hover{border-color:var(--accent)}
+
+.side{display:flex;flex-direction:column;gap:20px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:20px}
+.panel h3{
+  font-size:11.5px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase;
+  margin-bottom:14px;font-weight:700;
+}
+.statgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;text-align:center}
+.statgrid .v{font-size:23px;font-weight:800;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.statgrid .k{font-size:10.5px;letter-spacing:.14em;color:var(--faint);text-transform:uppercase;font-weight:600}
+#chart{width:100%;height:96px;display:block}
+.legend{display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--gray)}
+.legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;vertical-align:baseline}
+.how{margin-top:22px;color:var(--faint);font-size:13.5px;max-width:76ch}
+.how b{color:var(--gray)}
+
+@media (max-width:840px){
+  .game{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo">Neuro <span>Racer</span></div>
+    <a href="https://jerryw04.github.io">jerryw04.github.io ↗</a>
+  </header>
+
+  <div class="game">
+    <div class="board">
+      <div id="trackBox">
+        <canvas id="track"></canvas>
+        <div id="drawHint">Draw your track in one stroke —<br>end near the start to make a loop</div>
+      </div>
+      <div class="tools">
+        <button class="tool" id="drawBtn">✎ Draw track</button>
+        <button class="tool" id="resetTrackBtn">Default track</button>
+        <button class="tool" id="ffBtn">Fast-forward ×5</button>
+        <button class="tool accent" id="resetPopBtn" style="margin-left:auto">Reset brains</button>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="panel">
+        <h3>Evolution</h3>
+        <div class="statgrid">
+          <div><div class="v" id="genStat">1</div><div class="k">Generation</div></div>
+          <div><div class="v" id="aliveStat">0</div><div class="k">Alive</div></div>
+          <div><div class="v" id="bestStat">0</div><div class="k">Best fitness</div></div>
+          <div><div class="v" id="timeStat">0s</div><div class="k">Gen time</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Best fitness per generation</h3>
+        <canvas id="chart" width="230" height="96"></canvas>
+      </div>
+      <div class="panel legend">
+        <div><span class="sw" style="background:#E4602F"></span>Current best car (sensors shown)</div>
+        <div><span class="sw" style="background:#B9B8B1"></span>Rest of the population</div>
+        <div>Cars keep their brains when you draw a new track — see if what they learned transfers.</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="how">
+    <b>How it works:</b> each car is driven by a tiny neural network — five distance sensors
+    and its speed go in, steering and throttle come out. Nobody programs the driving: a
+    genetic algorithm breeds the best performers of each generation with random mutations,
+    and crashing ends a car's run. Fitness is progress along the track. Everything runs
+    live in your browser in plain JavaScript — no libraries, no server.
+  </p>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ================= canvas ================= */
+var canvas = document.getElementById('track');
+var ctx = canvas.getContext('2d');
+var W = 0, H = 0;
+var ROAD_W = 64;
+
+function sizeCanvas(){
+  var box = document.getElementById('trackBox');
+  W = box.clientWidth;
+  H = Math.round(Math.min(W * 0.62, window.innerHeight * 0.6));
+  canvas.width = W; canvas.height = H;
+  canvas.style.height = H + 'px';
+  if(centerline.length) buildTrack(centerline);
+}
+
+/* ================= track ================= */
+var centerline = [];   // resampled points along the drawn path
+var mask = null;       // Uint8 road mask (1 = road)
+var maskW = 0, maskH = 0;
+var closedLoop = false;
+var trackCanvas = document.createElement('canvas');
+
+function defaultTrack(){
+  var pts = [], cx = W/2, cy = H/2, i;
+  for(i = 0; i <= 100; i++){
+    var a = (i / 100) * Math.PI * 2;
+    var rx = W * 0.36 * (1 + 0.22 * Math.sin(a * 2));
+    var ry = H * 0.34 * (1 + 0.18 * Math.cos(a * 3));
+    pts.push({ x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry });
+  }
+  return pts;
+}
+
+function resample(pts, gap){
+  if(pts.length < 2) return pts.slice();
+  var out = [pts[0]], acc = 0, i;
+  for(i = 1; i < pts.length; i++){
+    var dx = pts[i].x - pts[i-1].x, dy = pts[i].y - pts[i-1].y;
+    var d = Math.sqrt(dx*dx + dy*dy);
+    acc += d;
+    while(acc >= gap){
+      var t = 1 - (acc - gap) / d;
+      out.push({ x: pts[i-1].x + dx * t, y: pts[i-1].y + dy * t });
+      acc -= gap;
+    }
+  }
+  return out;
+}
+
+function smoothPath(pts){
+  var out = [], i;
+  for(i = 0; i < pts.length; i++){
+    var a = pts[Math.max(0, i-1)], b = pts[i], c = pts[Math.min(pts.length-1, i+1)];
+    out.push({ x: (a.x + b.x + c.x) / 3, y: (a.y + b.y + c.y) / 3 });
+  }
+  return out;
+}
+
+function buildTrack(rawPts){
+  centerline = resample(smoothPath(rawPts), 14);
+  if(centerline.length < 6){ centerline = resample(defaultTrack(), 14); }
+
+  var first = centerline[0], last = centerline[centerline.length - 1];
+  var dx = first.x - last.x, dy = first.y - last.y;
+  closedLoop = Math.sqrt(dx*dx + dy*dy) < ROAD_W * 1.2;
+
+  /* rasterize road into a pixel mask for collisions & sensors */
+  trackCanvas.width = W; trackCanvas.height = H;
+  var t = trackCanvas.getContext('2d');
+  t.fillStyle = '#000'; t.fillRect(0, 0, W, H);
+  t.strokeStyle = '#fff';
+  t.lineWidth = ROAD_W;
+  t.lineCap = 'round'; t.lineJoin = 'round';
+  t.beginPath();
+  t.moveTo(centerline[0].x, centerline[0].y);
+  for(var i = 1; i < centerline.length; i++) t.lineTo(centerline[i].x, centerline[i].y);
+  if(closedLoop) t.closePath();
+  t.stroke();
+
+  var img = t.getImageData(0, 0, W, H).data;
+  maskW = W; maskH = H;
+  mask = new Uint8Array(W * H);
+  for(var p = 0; p < W * H; p++) mask[p] = img[p * 4] > 127 ? 1 : 0;
+
+  resetGenerationOnTrack();
+}
+
+function onRoad(x, y){
+  var xi = x | 0, yi = y | 0;
+  if(xi < 0 || yi < 0 || xi >= maskW || yi >= maskH) return false;
+  return mask[yi * maskW + xi] === 1;
+}
+
+/* ================= neural network ================= */
+/* 6 inputs (5 rays + speed) -> 7 hidden (tanh) -> 2 outputs (steer, throttle) */
+var N_IN = 6, N_HID = 7, N_OUT = 2;
+var GENOME = N_IN * N_HID + N_HID + N_HID * N_OUT + N_OUT;
+
+function randomGenome(){
+  var g = new Float32Array(GENOME);
+  for(var i = 0; i < GENOME; i++) g[i] = (Math.random() * 2 - 1) * 1.2;
+  return g;
+}
+function forward(g, inputs){
+  var hid = new Float32Array(N_HID), i, j, k = 0;
+  for(j = 0; j < N_HID; j++){
+    var s = 0;
+    for(i = 0; i < N_IN; i++) s += inputs[i] * g[k++];
+    s += g[N_IN * N_HID + j];
+    hid[j] = Math.tanh(s);
+  }
+  k = N_IN * N_HID + N_HID;
+  var out = new Float32Array(N_OUT);
+  for(j = 0; j < N_OUT; j++){
+    var s2 = 0;
+    for(i = 0; i < N_HID; i++) s2 += hid[i] * g[k++];
+    s2 += g[N_IN * N_HID + N_HID + N_HID * N_OUT + j];
+    out[j] = Math.tanh(s2);
+  }
+  return out;
+}
+function mutate(g){
+  var c = new Float32Array(g);
+  for(var i = 0; i < GENOME; i++){
+    if(Math.random() < 0.15) c[i] += (Math.random() * 2 - 1) * 0.4;
+    if(Math.random() < 0.02) c[i] = (Math.random() * 2 - 1) * 1.2;
+  }
+  return c;
+}
+function crossover(a, b){
+  var c = new Float32Array(GENOME);
+  for(var i = 0; i < GENOME; i++) c[i] = Math.random() < 0.5 ? a[i] : b[i];
+  return c;
+}
+
+/* ================= cars ================= */
+var POP = 36;
+var RAYS = [-1.05, -0.5, 0, 0.5, 1.05]; /* radians relative to heading */
+var RAY_MAX = 150;
+var genomes = [], cars = [];
+var generation = 1, genTime = 0, GEN_LIMIT = 22;
+var history = [];
+
+function initPopulation(){
+  genomes = [];
+  for(var i = 0; i < POP; i++) genomes.push(randomGenome());
+  generation = 1;
+  history = [];
+}
+
+function makeCar(genome){
+  var p0 = centerline[0], p1 = centerline[1];
+  return {
+    g: genome,
+    x: p0.x, y: p0.y,
+    angle: Math.atan2(p1.y - p0.y, p1.x - p0.x),
+    speed: 0,
+    alive: true,
+    fitness: 0,
+    cpIndex: 0,     /* furthest checkpoint reached */
+    laps: 0,
+    idle: 0,        /* time without progress */
+    rays: [0,0,0,0,0]
+  };
+}
+
+function resetGenerationOnTrack(){
+  cars = genomes.map(makeCar);
+  genTime = 0;
+}
+
+function castRay(x, y, ang){
+  var step = 5, d = step;
+  var cos = Math.cos(ang), sin = Math.sin(ang);
+  while(d < RAY_MAX){
+    if(!onRoad(x + cos * d, y + sin * d)) return d;
+    d += step;
+  }
+  return RAY_MAX;
+}
+
+function updateCar(c, dt){
+  if(!c.alive) return;
+
+  /* sense */
+  var inputs = new Float32Array(N_IN);
+  for(var r = 0; r < 5; r++){
+    var d = castRay(c.x, c.y, c.angle + RAYS[r]);
+    c.rays[r] = d;
+    inputs[r] = d / RAY_MAX;
+  }
+  inputs[5] = c.speed / 170;
+
+  /* think */
+  var out = forward(c.g, inputs);
+  var steer = out[0];
+  var throttle = (out[1] + 1) / 2;
+
+  /* move */
+  c.speed += (throttle * 190 - 60) * dt;   /* accel minus drag baseline */
+  c.speed = Math.max(20, Math.min(170, c.speed));
+  c.angle += steer * 2.6 * dt * (0.4 + c.speed / 170);
+  c.x += Math.cos(c.angle) * c.speed * dt;
+  c.y += Math.sin(c.angle) * c.speed * dt;
+
+  /* crash */
+  if(!onRoad(c.x, c.y)){ c.alive = false; return; }
+
+  /* progress along checkpoints */
+  var n = centerline.length;
+  var next = (c.cpIndex + 1) % n;
+  var target = centerline[next];
+  var dx = c.x - target.x, dy = c.y - target.y;
+  if(dx*dx + dy*dy < (ROAD_W * 0.75) * (ROAD_W * 0.75)){
+    c.cpIndex = next;
+    if(closedLoop && next === 0) c.laps++;
+    c.idle = 0;
+  }else{
+    c.idle += dt;
+    if(c.idle > 4){ c.alive = false; return; } /* cull loiterers */
+  }
+  c.fitness = c.laps * n + c.cpIndex;
+}
+
+/* ================= evolution ================= */
+function evolve(){
+  var ranked = cars.slice().sort(function(a, b){ return b.fitness - a.fitness; });
+  var best = ranked[0] ? ranked[0].fitness : 0;
+  history.push(best);
+  if(history.length > 60) history.shift();
+
+  var parents = ranked.slice(0, Math.max(6, POP >> 2));
+  var next = [];
+  /* elitism: keep the top brains untouched */
+  for(var e = 0; e < 4 && e < ranked.length; e++) next.push(new Float32Array(ranked[e].g));
+  while(next.length < POP){
+    var a = parents[Math.floor(Math.random() * parents.length)].g;
+    var b = parents[Math.floor(Math.random() * parents.length)].g;
+    next.push(mutate(crossover(a, b)));
+  }
+  genomes = next;
+  generation++;
+  resetGenerationOnTrack();
+  drawChart();
+}
+
+/* ================= drawing mode ================= */
+var drawMode = false, drawingNow = false, rawPts = [];
+var drawBtn = document.getElementById('drawBtn');
+var drawHint = document.getElementById('drawHint');
+
+drawBtn.addEventListener('click', function(){
+  drawMode = !drawMode;
+  drawBtn.classList.toggle('active', drawMode);
+  canvas.classList.toggle('drawing', drawMode);
+  drawHint.classList.toggle('show', drawMode);
+});
+document.getElementById('resetTrackBtn').addEventListener('click', function(){
+  exitDrawMode();
+  buildTrack(defaultTrack());
+});
+document.getElementById('resetPopBtn').addEventListener('click', function(){
+  initPopulation();
+  resetGenerationOnTrack();
+  drawChart();
+});
+var fastForward = false;
+document.getElementById('ffBtn').addEventListener('click', function(){
+  fastForward = !fastForward;
+  this.classList.toggle('active', fastForward);
+});
+
+function exitDrawMode(){
+  drawMode = false; drawingNow = false;
+  drawBtn.classList.remove('active');
+  canvas.classList.remove('drawing');
+  drawHint.classList.remove('show');
+}
+
+function ptFromEvent(e){
+  var r = canvas.getBoundingClientRect();
+  var p = e.touches ? e.touches[0] : e;
+  return { x: (p.clientX - r.left) * (canvas.width / r.width), y: (p.clientY - r.top) * (canvas.height / r.height) };
+}
+function penDown(e){
+  if(!drawMode) return;
+  drawingNow = true; rawPts = [ptFromEvent(e)];
+  drawHint.classList.remove('show');
+  e.preventDefault();
+}
+function penMove(e){
+  if(!drawingNow) return;
+  var p = ptFromEvent(e);
+  var lastP = rawPts[rawPts.length - 1];
+  var dx = p.x - lastP.x, dy = p.y - lastP.y;
+  if(dx*dx + dy*dy > 36) rawPts.push(p);
+  e.preventDefault();
+}
+function penUp(){
+  if(!drawingNow) return;
+  drawingNow = false;
+  if(rawPts.length > 8){ buildTrack(rawPts); }
+  exitDrawMode();
+}
+canvas.addEventListener('mousedown', penDown);
+canvas.addEventListener('mousemove', penMove);
+window.addEventListener('mouseup', penUp);
+canvas.addEventListener('touchstart', penDown, {passive:false});
+canvas.addEventListener('touchmove', penMove, {passive:false});
+canvas.addEventListener('touchend', penUp);
+
+/* ================= render ================= */
+function render(){
+  ctx.fillStyle = '#EDECE7';
+  ctx.fillRect(0, 0, W, H);
+
+  /* road */
+  if(centerline.length){
+    ctx.strokeStyle = '#2A2A28';
+    ctx.lineWidth = ROAD_W;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    pathCenterline();
+    ctx.stroke();
+    /* center dashes */
+    ctx.strokeStyle = 'rgba(245,244,241,.5)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([10, 14]);
+    pathCenterline();
+    ctx.stroke();
+    ctx.setLineDash([]);
+    /* start marker */
+    var s = centerline[0];
+    ctx.fillStyle = '#F5F4F1';
+    ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  /* live drawing preview */
+  if(drawingNow && rawPts.length > 1){
+    ctx.strokeStyle = 'rgba(228,96,47,.85)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(rawPts[0].x, rawPts[0].y);
+    for(var i = 1; i < rawPts.length; i++) ctx.lineTo(rawPts[i].x, rawPts[i].y);
+    ctx.stroke();
+  }
+
+  /* cars — find best alive for highlight */
+  var best = null;
+  cars.forEach(function(c){
+    if(c.alive && (!best || c.fitness > best.fitness)) best = c;
+  });
+  cars.forEach(function(c){
+    if(!c.alive) return;
+    if(c !== best) drawCar(c, '#B9B8B1');
+  });
+  if(best){
+    /* sensor rays */
+    ctx.strokeStyle = 'rgba(228,96,47,.35)';
+    ctx.lineWidth = 1;
+    for(var r = 0; r < 5; r++){
+      var a = best.angle + RAYS[r];
+      ctx.beginPath();
+      ctx.moveTo(best.x, best.y);
+      ctx.lineTo(best.x + Math.cos(a) * best.rays[r], best.y + Math.sin(a) * best.rays[r]);
+      ctx.stroke();
+    }
+    drawCar(best, '#E4602F');
+  }
+}
+function pathCenterline(){
+  ctx.beginPath();
+  ctx.moveTo(centerline[0].x, centerline[0].y);
+  for(var i = 1; i < centerline.length; i++) ctx.lineTo(centerline[i].x, centerline[i].y);
+  if(closedLoop) ctx.closePath();
+}
+function drawCar(c, color){
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.rotate(c.angle);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(-9, -5, 18, 10, 3);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(25,25,23,.55)';
+  ctx.fillRect(2, -3.5, 4, 7);
+  ctx.restore();
+}
+
+/* ================= chart ================= */
+var chart = document.getElementById('chart');
+var cctx = chart.getContext('2d');
+function drawChart(){
+  var w = chart.width, h = chart.height;
+  cctx.clearRect(0, 0, w, h);
+  cctx.strokeStyle = '#E4E3DD';
+  cctx.beginPath(); cctx.moveTo(0, h - 1); cctx.lineTo(w, h - 1); cctx.stroke();
+  if(history.length < 2) return;
+  var max = Math.max.apply(null, history) || 1;
+  cctx.strokeStyle = '#E4602F';
+  cctx.lineWidth = 2;
+  cctx.lineJoin = 'round';
+  cctx.beginPath();
+  history.forEach(function(v, i){
+    var x = (i / (history.length - 1)) * (w - 4) + 2;
+    var y = h - 4 - (v / max) * (h - 10);
+    i === 0 ? cctx.moveTo(x, y) : cctx.lineTo(x, y);
+  });
+  cctx.stroke();
+}
+
+/* ================= HUD ================= */
+var genStat = document.getElementById('genStat');
+var aliveStat = document.getElementById('aliveStat');
+var bestStat = document.getElementById('bestStat');
+var timeStat = document.getElementById('timeStat');
+function updateHUD(){
+  var alive = 0, best = 0;
+  cars.forEach(function(c){
+    if(c.alive) alive++;
+    if(c.fitness > best) best = c.fitness;
+  });
+  genStat.textContent = generation;
+  aliveStat.textContent = alive;
+  bestStat.textContent = best;
+  timeStat.textContent = Math.floor(genTime) + 's';
+}
+
+/* ================= main loop ================= */
+var last = 0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  var frameDt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+
+  if(!drawMode && !drawingNow){
+    var steps = fastForward ? 5 : 1;
+    var dt = 1 / 60;
+    for(var s = 0; s < steps; s++){
+      genTime += dt;
+      var alive = 0;
+      for(var i = 0; i < cars.length; i++){
+        updateCar(cars[i], dt);
+        if(cars[i].alive) alive++;
+      }
+      if(alive === 0 || genTime > GEN_LIMIT){ evolve(); break; }
+    }
+  }
+  render();
+  updateHUD();
+}
+
+/* ================= boot ================= */
+sizeCanvas();
+window.addEventListener('resize', sizeCanvas);
+initPopulation();
+buildTrack(defaultTrack());
+drawChart();
+requestAnimationFrame(function(ts){ last = ts; loop(ts); });
+})();
+</script>
+</body>
+</html>
