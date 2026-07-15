@@ -59,6 +59,30 @@ header a:hover{color:var(--ink)}
 .tool.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .tool.accent{color:var(--accent);border-color:transparent}
 .tool.accent:hover{border-color:var(--accent)}
+.sliders{
+  display:flex;gap:26px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);
+}
+.sliders label{
+  display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--gray);
+}
+.sliders input[type=range]{
+  width:120px;accent-color:var(--accent);cursor:pointer;
+}
+.sval{
+  font-variant-numeric:tabular-nums;color:var(--ink);min-width:44px;font-weight:700;
+}
+
+/* best car controls */
+.keys{display:flex;justify-content:center;gap:10px;margin-bottom:12px}
+.keycap{
+  width:52px;height:52px;border-radius:11px;border:1px solid var(--line);
+  display:grid;place-items:center;font-size:19px;color:var(--faint);
+  background:var(--surface);
+  transition:transform .08s var(--ease);
+}
+.keycap.on{transform:translateY(2px)}
+.keyreads{display:flex;justify-content:space-between;font-size:12.5px;color:var(--faint)}
+.keyreads b{color:var(--ink);font-variant-numeric:tabular-nums;font-weight:700}
 
 .side{display:flex;flex-direction:column;gap:20px}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:20px}
@@ -92,13 +116,22 @@ header a:hover{color:var(--ink)}
     <div class="board">
       <div id="trackBox">
         <canvas id="track"></canvas>
-        <div id="drawHint">Draw your track in one stroke —<br>end near the start to make a loop</div>
+        <div id="drawHint">Draw your track in one stroke —<br>end near the start for a loop, or anywhere for a sprint</div>
       </div>
       <div class="tools">
         <button class="tool" id="drawBtn">✎ Draw track</button>
         <button class="tool" id="resetTrackBtn">Default track</button>
-        <button class="tool" id="ffBtn">Fast-forward ×5</button>
         <button class="tool accent" id="resetPopBtn" style="margin-left:auto">Reset brains</button>
+      </div>
+      <div class="sliders">
+        <label>Speed
+          <input type="range" id="speedSlider" min="1" max="10" step="1" value="1">
+          <span class="sval" id="speedVal">×1</span>
+        </label>
+        <label>Road width
+          <input type="range" id="widthSlider" min="36" max="110" step="2" value="64">
+          <span class="sval" id="widthVal">64px</span>
+        </label>
       </div>
     </div>
 
@@ -113,13 +146,25 @@ header a:hover{color:var(--ink)}
         </div>
       </div>
       <div class="panel">
+        <h3>Best car controls</h3>
+        <div class="keys">
+          <div class="keycap" id="keyL">◀</div>
+          <div class="keycap" id="keyT">▲</div>
+          <div class="keycap" id="keyR">▶</div>
+        </div>
+        <div class="keyreads">
+          <span>steer <b id="steerVal">0.00</b></span>
+          <span>throttle <b id="thrVal">0%</b></span>
+        </div>
+      </div>
+      <div class="panel">
         <h3>Best fitness per generation</h3>
         <canvas id="chart" width="230" height="96"></canvas>
       </div>
       <div class="panel legend">
         <div><span class="sw" style="background:#E4602F"></span>Current best car (sensors shown)</div>
         <div><span class="sw" style="background:#B9B8B1"></span>Rest of the population</div>
-        <div>Cars keep their brains when you draw a new track — see if what they learned transfers.</div>
+        <div>End your stroke near its start for a lap-able loop — or anywhere else for a point-to-point sprint to the finish flag. Cars keep their brains when you draw a new track.</div>
       </div>
     </div>
   </div>
@@ -141,7 +186,8 @@ header a:hover{color:var(--ink)}
 var canvas = document.getElementById('track');
 var ctx = canvas.getContext('2d');
 var W = 0, H = 0;
-var ROAD_W = 64;
+var roadW = 64;
+var lastPath = null;   /* raw points of the current track, for rebuilds */
 
 function sizeCanvas(){
   var box = document.getElementById('trackBox');
@@ -149,7 +195,7 @@ function sizeCanvas(){
   H = Math.round(Math.min(W * 0.62, window.innerHeight * 0.6));
   canvas.width = W; canvas.height = H;
   canvas.style.height = H + 'px';
-  if(centerline.length) buildTrack(centerline);
+  buildTrack(lastPath || defaultTrack());
 }
 
 /* ================= track ================= */
@@ -196,32 +242,76 @@ function smoothPath(pts){
 }
 
 function buildTrack(rawPts){
-  centerline = resample(smoothPath(rawPts), 14);
-  if(centerline.length < 6){ centerline = resample(defaultTrack(), 14); }
+  if(!rawPts || rawPts.length < 2) return false;
+  var cl = resample(smoothPath(rawPts), 14);
+  if(cl.length < 12) return false;   /* too short to be a track */
 
-  var first = centerline[0], last = centerline[centerline.length - 1];
-  var dx = first.x - last.x, dy = first.y - last.y;
-  closedLoop = Math.sqrt(dx*dx + dy*dy) < ROAD_W * 1.2;
+  var first = cl[0], last = cl[cl.length - 1];
+  var ddx = first.x - last.x, ddy = first.y - last.y;
+  var isLoop = Math.sqrt(ddx*ddx + ddy*ddy) < roadW * 1.2;
 
-  /* rasterize road into a pixel mask for collisions & sensors */
+  /* rasterize candidate road into a pixel mask */
   trackCanvas.width = W; trackCanvas.height = H;
   var t = trackCanvas.getContext('2d');
   t.fillStyle = '#000'; t.fillRect(0, 0, W, H);
   t.strokeStyle = '#fff';
-  t.lineWidth = ROAD_W;
+  t.lineWidth = roadW;
   t.lineCap = 'round'; t.lineJoin = 'round';
   t.beginPath();
-  t.moveTo(centerline[0].x, centerline[0].y);
-  for(var i = 1; i < centerline.length; i++) t.lineTo(centerline[i].x, centerline[i].y);
-  if(closedLoop) t.closePath();
+  t.moveTo(cl[0].x, cl[0].y);
+  for(var i = 1; i < cl.length; i++) t.lineTo(cl[i].x, cl[i].y);
+  if(isLoop) t.closePath();
   t.stroke();
 
   var img = t.getImageData(0, 0, W, H).data;
-  maskW = W; maskH = H;
-  mask = new Uint8Array(W * H);
-  for(var p = 0; p < W * H; p++) mask[p] = img[p * 4] > 127 ? 1 : 0;
+  var candidate = new Uint8Array(W * H);
+  for(var p = 0; p < W * H; p++) candidate[p] = img[p * 4] > 127 ? 1 : 0;
 
+  /* validate: a drivable path must exist from start to finish (BFS on
+     a coarse grid over the road mask) */
+  if(!connected(candidate, first, last)) return false;
+
+  /* commit */
+  centerline = cl;
+  mask = candidate;
+  maskW = W; maskH = H;
+  closedLoop = isLoop;
+  lastPath = rawPts;
   resetGenerationOnTrack();
+  return true;
+}
+
+/* BFS over the road mask (4px grid) to confirm start and finish are
+   connected by road */
+function connected(m, a, b){
+  var S = 4;
+  var gw = Math.ceil(W / S), gh = Math.ceil(H / S);
+  function road(gx, gy){
+    var x = Math.min(W - 1, gx * S), y = Math.min(H - 1, gy * S);
+    return m[y * W + x] === 1;
+  }
+  var sx = Math.max(0, Math.min(gw - 1, Math.round(a.x / S)));
+  var sy = Math.max(0, Math.min(gh - 1, Math.round(a.y / S)));
+  var ex = Math.max(0, Math.min(gw - 1, Math.round(b.x / S)));
+  var ey = Math.max(0, Math.min(gh - 1, Math.round(b.y / S)));
+  if(!road(sx, sy) || !road(ex, ey)) return false;
+  var visited = new Uint8Array(gw * gh);
+  var qx = [sx], qy = [sy];
+  visited[sy * gw + sx] = 1;
+  while(qx.length){
+    var cx = qx.shift(), cy = qy.shift();
+    if(cx === ex && cy === ey) return true;
+    var dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+    for(var d = 0; d < 4; d++){
+      var nx = cx + dirs[d][0], ny = cy + dirs[d][1];
+      if(nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+      var idx = ny * gw + nx;
+      if(visited[idx] || !road(nx, ny)) continue;
+      visited[idx] = 1;
+      qx.push(nx); qy.push(ny);
+    }
+  }
+  return false;
 }
 
 function onRoad(x, y){
@@ -334,6 +424,7 @@ function updateCar(c, dt){
   var out = forward(c.g, inputs);
   var steer = out[0];
   var throttle = (out[1] + 1) / 2;
+  c.ctrl = { steer: steer, throttle: throttle };
 
   /* move */
   c.speed += (throttle * 190 - 60) * dt;   /* accel minus drag baseline */
@@ -350,9 +441,15 @@ function updateCar(c, dt){
   var next = (c.cpIndex + 1) % n;
   var target = centerline[next];
   var dx = c.x - target.x, dy = c.y - target.y;
-  if(dx*dx + dy*dy < (ROAD_W * 0.75) * (ROAD_W * 0.75)){
+  if(dx*dx + dy*dy < (roadW * 0.75) * (roadW * 0.75)){
     c.cpIndex = next;
     if(closedLoop && next === 0) c.laps++;
+    /* open track: reaching the last checkpoint = crossing the finish */
+    if(!closedLoop && next === n - 1){
+      c.fitness = n + Math.max(0, Math.round((GEN_LIMIT - genTime) * 2));
+      c.alive = false;
+      return;
+    }
     c.idle = 0;
   }else{
     c.idle += dt;
@@ -403,11 +500,34 @@ document.getElementById('resetPopBtn').addEventListener('click', function(){
   resetGenerationOnTrack();
   drawChart();
 });
-var fastForward = false;
-document.getElementById('ffBtn').addEventListener('click', function(){
-  fastForward = !fastForward;
-  this.classList.toggle('active', fastForward);
+
+/* speed slider */
+var simSpeed = 1;
+var speedSlider = document.getElementById('speedSlider');
+var speedVal = document.getElementById('speedVal');
+speedSlider.addEventListener('input', function(){
+  simSpeed = +this.value;
+  speedVal.textContent = '×' + simSpeed;
 });
+
+/* road width slider — rebuilds the current track live */
+var widthSlider = document.getElementById('widthSlider');
+var widthVal = document.getElementById('widthVal');
+widthSlider.addEventListener('input', function(){
+  roadW = +this.value;
+  widthVal.textContent = roadW + 'px';
+  if(lastPath) buildTrack(lastPath);
+});
+
+function flashHint(text, ms){
+  var original = 'Draw your track in one stroke —<br>end near the start for a loop, or anywhere for a sprint';
+  drawHint.innerHTML = text;
+  drawHint.classList.add('show');
+  setTimeout(function(){
+    drawHint.classList.remove('show');
+    drawHint.innerHTML = original;
+  }, ms || 1800);
+}
 
 function exitDrawMode(){
   drawMode = false; drawingNow = false;
@@ -438,7 +558,11 @@ function penMove(e){
 function penUp(){
   if(!drawingNow) return;
   drawingNow = false;
-  if(rawPts.length > 8){ buildTrack(rawPts); }
+  if(rawPts.length > 8){
+    if(!buildTrack(rawPts)){
+      flashHint('That track isn\u2019t drivable — draw one longer continuous stroke');
+    }
+  }
   exitDrawMode();
 }
 canvas.addEventListener('mousedown', penDown);
@@ -456,7 +580,7 @@ function render(){
   /* road */
   if(centerline.length){
     ctx.strokeStyle = '#2A2A28';
-    ctx.lineWidth = ROAD_W;
+    ctx.lineWidth = roadW;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     pathCenterline();
     ctx.stroke();
@@ -471,6 +595,19 @@ function render(){
     var s = centerline[0];
     ctx.fillStyle = '#F5F4F1';
     ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, Math.PI * 2); ctx.fill();
+    /* finish flag on open tracks */
+    if(!closedLoop){
+      var f = centerline[centerline.length - 1];
+      ctx.fillStyle = '#F5F4F1';
+      ctx.beginPath(); ctx.arc(f.x, f.y, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#191917';
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, 9, -Math.PI/2, 0); ctx.lineTo(f.x, f.y); ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, 9, Math.PI/2, Math.PI); ctx.lineTo(f.x, f.y); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#191917'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(f.x, f.y, 9, 0, Math.PI * 2); ctx.stroke();
+    }
   }
 
   /* live drawing preview */
@@ -552,16 +689,40 @@ var genStat = document.getElementById('genStat');
 var aliveStat = document.getElementById('aliveStat');
 var bestStat = document.getElementById('bestStat');
 var timeStat = document.getElementById('timeStat');
+var keyL = document.getElementById('keyL');
+var keyT = document.getElementById('keyT');
+var keyR = document.getElementById('keyR');
+var steerVal = document.getElementById('steerVal');
+var thrVal = document.getElementById('thrVal');
+
+function setKey(el, intensity){
+  var a = Math.max(0, Math.min(1, intensity));
+  el.classList.toggle('on', a > 0.25);
+  el.style.background = a > 0.05 ? 'rgba(228,96,47,' + (0.12 + a * 0.88) + ')' : '';
+  el.style.color = a > 0.45 ? '#fff' : '';
+  el.style.borderColor = a > 0.05 ? 'rgba(228,96,47,' + (0.3 + a * 0.7) + ')' : '';
+}
+
 function updateHUD(){
-  var alive = 0, best = 0;
+  var alive = 0, best = 0, bestCar = null;
   cars.forEach(function(c){
-    if(c.alive) alive++;
+    if(c.alive){
+      alive++;
+      if(!bestCar || c.fitness > bestCar.fitness) bestCar = c;
+    }
     if(c.fitness > best) best = c.fitness;
   });
   genStat.textContent = generation;
   aliveStat.textContent = alive;
   bestStat.textContent = best;
   timeStat.textContent = Math.floor(genTime) + 's';
+
+  var ctl = bestCar && bestCar.ctrl ? bestCar.ctrl : { steer: 0, throttle: 0 };
+  setKey(keyL, ctl.steer < 0 ? -ctl.steer : 0);
+  setKey(keyR, ctl.steer > 0 ? ctl.steer : 0);
+  setKey(keyT, ctl.throttle);
+  steerVal.textContent = (ctl.steer >= 0 ? '+' : '') + ctl.steer.toFixed(2);
+  thrVal.textContent = Math.round(ctl.throttle * 100) + '%';
 }
 
 /* ================= main loop ================= */
@@ -572,7 +733,7 @@ function loop(ts){
   last = ts;
 
   if(!drawMode && !drawingNow){
-    var steps = fastForward ? 5 : 1;
+    var steps = simSpeed;
     var dt = 1 / 60;
     for(var s = 0; s < steps; s++){
       genTime += dt;
@@ -589,10 +750,9 @@ function loop(ts){
 }
 
 /* ================= boot ================= */
-sizeCanvas();
-window.addEventListener('resize', sizeCanvas);
 initPopulation();
-buildTrack(defaultTrack());
+sizeCanvas();               /* builds the default track */
+window.addEventListener('resize', sizeCanvas);
 drawChart();
 requestAnimationFrame(function(ts){ last = ts; loop(ts); });
 })();
